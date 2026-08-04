@@ -238,7 +238,7 @@ def build_router(
             await message.answer("Активных заявок нет.", reply_markup=main_menu())
             return
         errors = [result.error for result in results if result.error]
-        with_slots = sum(bool(result.slots) for result in results)
+        with_slots = sum(bool(result.slots or result.early_slots) for result in results)
         sent = sum(result.notification_sent for result in results)
         summary = (
             f"Проверено заявок: {len(results)}\n"
@@ -512,13 +512,14 @@ def build_router(
             await callback.answer("Проверяю…")
             result = await checker.check_entry(entry)
             if callback.message:
+                found = result.slots + result.early_slots
                 if result.error:
                     await callback.message.answer(f"Не удалось проверить заявку #{entry.id}: {result.error}")
-                elif not result.slots:
+                elif not found:
                     await callback.message.answer(f"Для заявки #{entry.id} свободных окон пока нет.")
                 elif not result.notification_sent:
                     await callback.message.answer(
-                        f"Для заявки #{entry.id} есть окна: {', '.join(result.slots[:10])}.\n"
+                        f"Для заявки #{entry.id} есть окна: {', '.join(found[:10])}.\n"
                         "Повторное уведомление не отправлено из-за ограничения 6 часов."
                     )
             return

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
 
@@ -37,6 +37,7 @@ class WaitlistEntry:
 class CheckResult:
     entry_id: int
     slots: list[str]
+    early_slots: list[str] = field(default_factory=list)  # «06.08 15:00» — раньше желаемой даты
     notification_sent: bool = False
     error: str | None = None
 

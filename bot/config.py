@@ -58,6 +58,7 @@ class Settings:
     yclients_service_id: int | None
     yclients_check_interval_minutes: int
     slot_time_tolerance_hours: int = 3
+    early_slot_days: int = 7
     notification_cooldown_hours: int = 6
 
     @classmethod
@@ -83,6 +84,12 @@ class Settings:
         if tolerance < 0:
             raise ValueError("SLOT_TIME_TOLERANCE_HOURS не может быть отрицательным")
 
+        early_days = _optional_int("EARLY_SLOT_DAYS")
+        if early_days is None:
+            early_days = 7
+        if early_days < 0:
+            raise ValueError("EARLY_SLOT_DAYS не может быть отрицательным")
+
         return cls(
             telegram_bot_token=token,
             admin_telegram_id=_optional_int("ADMIN_TELEGRAM_ID"),
@@ -101,6 +108,7 @@ class Settings:
             yclients_service_id=_optional_int("YCLIENTS_SERVICE_ID"),
             yclients_check_interval_minutes=interval,
             slot_time_tolerance_hours=tolerance,
+            early_slot_days=early_days,
         )
 
     @property
