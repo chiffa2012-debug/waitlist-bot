@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart, StateFilter
@@ -13,24 +13,27 @@ from .keyboards import (
     admins_keyboard,
     add_confirmation_keyboard,
     cancel_keyboard,
+    entries_index,
     entry_actions,
     main_menu,
-    single_action,
+    options_keyboard,
     skip_keyboard,
     status_confirmation,
 )
-from .models import EntryStatus
+from .models import EntryStatus, WaitlistEntry
 from .repositories import WaitlistRepository
 from .scheduler import WaitlistChecker
 from .states import AddEntry, AdminManagement
 from .utils import (
     format_added,
+    format_entries_list,
     format_entry,
     is_valid_phone,
     normalize_optional,
     parse_desired_date_and_time,
     parse_time,
 )
+from .yclients_client import YclientsClient, YclientsError
 
 
 HELP_TEXT = """Лист ожидания помогает не забыть клиентов и проверяет окна Yclients.
@@ -39,11 +42,12 @@ HELP_TEXT = """Лист ожидания помогает не забыть кл
 /list — актуальный лист
 /today — заявки на сегодня
 /tomorrow — заявки на завтра
-/done — отметить клиента записанным
-/delete — удалить заявку
+/expired — заявки с прошедшей датой
 /check — проверить окна
 /admins — добавить или удалить администраторов
 /help — эта инструкция
+
+Заявки открываются кнопкой с номером под списком: там «Записан», «Удалить» и проверка окон.
 
 Бот ничего не записывает в Yclients автоматически. Когда появится окно, свяжитесь с клиентом и оформите запись обычным способом."""
 
@@ -52,28 +56,81 @@ def build_router(
     settings: Settings,
     repository: WaitlistRepository,
     checker: WaitlistChecker,
+    yclients: YclientsClient,
 ) -> Router:
     router = Router(name="waitlist")
 
-    async def show_entries(
-        message: Message,
-        title: str,
-        desired_date=None,
-        action: str | None = None,
+    def today() -> date:
+        return datetime.now(settings.timezone).date()
+
+    async def send_entries(
+        message: Message, title: str, entries: list[WaitlistEntry]
     ) -> None:
-        entries = await repository.list_active(desired_date)
         if not entries:
             await message.answer("Активных заявок нет.", reply_markup=main_menu())
             return
-        await message.answer(f"{title}: {len(entries)}")
-        for entry in entries:
-            if action == "booked":
-                markup = single_action(entry.id, "booked", "Отметить записанным")
-            elif action == "deleted":
-                markup = single_action(entry.id, "deleted", "Удалить")
-            else:
-                markup = entry_actions(entry.id)
-            await message.answer(format_entry(entry), reply_markup=markup)
+        await message.answer(
+            format_entries_list(entries, title),
+            reply_markup=entries_index(entries[:20]),
+        )
+
+    async def send_card(message: Message, entry: WaitlistEntry) -> None:
+        await message.answer(format_entry(entry), reply_markup=entry_actions(entry.id))
+
+    async def ask_service(message: Message, state: FSMContext, query: str = "") -> None:
+        """Шаг выбора услуги. При недоступном Yclients сразу идём дальше."""
+        try:
+            options = await yclients.search_services(query)
+        except YclientsError as exc:
+            await message.answer(
+                f"Список услуг сейчас недоступен: {exc}\n"
+                "Продолжаю без услуги — окна по этой заявке проверяться не будут."
+            )
+            await ask_date(message, state)
+            return
+        if not options:
+            await message.answer(
+                "Такой услуги не нашлось. Напишите другое слово из названия, "
+                "например «маникюр» или «брови»."
+            )
+            return
+        await state.set_state(AddEntry.service)
+        await message.answer(
+            "Выберите услугу или напишите часть названия для поиска.",
+            reply_markup=options_keyboard("svc", options),
+        )
+
+    async def ask_staff(message: Message, state: FSMContext, query: str = "") -> None:
+        data = await state.get_data()
+        service_id = data.get("service_id")
+        try:
+            options = await yclients.get_staff(int(service_id))
+        except (YclientsError, TypeError, ValueError) as exc:
+            await message.answer(f"Список мастеров недоступен: {exc}\nПродолжаю без мастера.")
+            await state.update_data(staff_id=None, staff_name=None)
+            await ask_date(message, state)
+            return
+        needle = query.strip().casefold()
+        if needle:
+            options = [item for item in options if needle in item[1].casefold()]
+            if not options:
+                await message.answer("Такого мастера нет в списке. Попробуйте другое имя.")
+                return
+        await state.set_state(AddEntry.staff)
+        await message.answer(
+            "Выберите мастера, напишите его имя или нажмите «Любой мастер».",
+            reply_markup=options_keyboard(
+                "stf", options, extra=("Любой мастер", "stf:0")
+            ),
+        )
+
+    async def ask_date(message: Message, state: FSMContext) -> None:
+        await state.set_state(AddEntry.desired_date)
+        await message.answer(
+            "На какую дату клиент хотел записаться?\n"
+            "Например: 22.07.2026, 2026-07-22, сегодня, завтра или «завтра в 16:00».",
+            reply_markup=cancel_keyboard(),
+        )
 
     async def begin_add(message: Message, state: FSMContext) -> None:
         await state.clear()
@@ -93,6 +150,9 @@ def build_router(
         lines.append("\nДля добавления нужен числовой Telegram ID пользователя.")
         await message.answer("\n".join(lines), reply_markup=admins_keyboard(admins))
 
+    # --- Команды и кнопки меню. Регистрируются первыми, поэтому всегда
+    # --- прерывают начатую анкету, а не попадают в неё как ответ на вопрос.
+
     @router.message(CommandStart())
     async def start(message: Message, state: FSMContext) -> None:
         await state.clear()
@@ -103,13 +163,96 @@ def build_router(
 
     @router.message(Command("help"))
     @router.message(F.text == "Помощь")
-    async def help_message(message: Message) -> None:
+    async def help_message(message: Message, state: FSMContext) -> None:
+        await state.clear()
         await message.answer(HELP_TEXT, reply_markup=main_menu())
+
+    @router.message(Command("add"))
+    @router.message(F.text == "Добавить клиента")
+    async def add(message: Message, state: FSMContext) -> None:
+        await begin_add(message, state)
+
+    @router.message(Command("list"))
+    @router.message(F.text == "Лист ожидания")
+    async def list_entries(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        current = today()
+        await send_entries(
+            message, "Лист ожидания", await repository.list_active(not_before=current)
+        )
+        expired = await repository.list_expired(current)
+        if expired:
+            await message.answer(
+                f"Заявок с прошедшей датой: {len(expired)}. Разобрать — /expired"
+            )
+
+    @router.message(Command("today"))
+    @router.message(F.text == "Сегодня")
+    async def today_entries(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await send_entries(
+            message, "Ждут запись на сегодня", await repository.list_active(today())
+        )
+
+    @router.message(Command("tomorrow"))
+    @router.message(F.text == "Завтра")
+    async def tomorrow_entries(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        value = today() + timedelta(days=1)
+        await send_entries(message, "Ждут запись на завтра", await repository.list_active(value))
+
+    @router.message(Command("expired"))
+    async def expired_entries(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        entries = await repository.list_expired(today())
+        if not entries:
+            await message.answer("Просроченных заявок нет.", reply_markup=main_menu())
+            return
+        await message.answer(
+            format_entries_list(entries, "Дата уже прошла"),
+            reply_markup=entries_index(entries[:20]),
+        )
+
+    @router.message(Command("done"))
+    @router.message(Command("delete"))
+    async def done_or_delete(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await send_entries(
+            message,
+            "Откройте заявку кнопкой ниже",
+            await repository.list_active(not_before=today()),
+        )
+
+    @router.message(Command("check"))
+    @router.message(F.text == "Проверить окна")
+    async def check_all(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        readiness_error = settings.yclients_readiness_error
+        if readiness_error:
+            await message.answer(readiness_error, reply_markup=main_menu())
+            return
+        await message.answer("Проверяю окна…")
+        results = await checker.check_waitlist_entries()
+        if not results:
+            await message.answer("Активных заявок нет.", reply_markup=main_menu())
+            return
+        errors = [result.error for result in results if result.error]
+        with_slots = sum(bool(result.slots) for result in results)
+        sent = sum(result.notification_sent for result in results)
+        summary = (
+            f"Проверено заявок: {len(results)}\n"
+            f"С доступными окнами: {with_slots}\n"
+            f"Новых уведомлений: {sent}"
+        )
+        if errors:
+            summary += f"\nОшибок: {len(errors)}\n{errors[0]}"
+        await message.answer(summary, reply_markup=main_menu())
 
     @router.message(Command("admins"))
     @router.message(Command("remove_admin"))
     @router.message(F.text == "Администраторы")
-    async def admins_list(message: Message) -> None:
+    async def admins_list(message: Message, state: FSMContext) -> None:
+        await state.clear()
         await send_admins(message)
 
     @router.message(Command("add_admin"))
@@ -124,9 +267,11 @@ def build_router(
             reply_markup=cancel_keyboard(),
         )
 
-    @router.message(StateFilter(AdminManagement), Command("cancel"))
-    @router.message(StateFilter(AdminManagement), F.text.casefold() == "отмена")
-    async def cancel_admin_action(message: Message, state: FSMContext) -> None:
+    # --- Анкеты
+
+    @router.message(StateFilter(AddEntry, AdminManagement), Command("cancel"))
+    @router.message(StateFilter(AddEntry, AdminManagement), F.text.casefold() == "отмена")
+    async def cancel_flow(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer("Действие отменено.", reply_markup=main_menu())
 
@@ -152,17 +297,6 @@ def build_router(
         else:
             await message.answer("Этот пользователь уже является администратором.", reply_markup=main_menu())
 
-    @router.message(Command("add"))
-    @router.message(F.text == "Добавить клиента")
-    async def add(message: Message, state: FSMContext) -> None:
-        await begin_add(message, state)
-
-    @router.message(StateFilter(AddEntry), Command("cancel"))
-    @router.message(StateFilter(AddEntry), F.text.casefold() == "отмена")
-    async def cancel_add(message: Message, state: FSMContext) -> None:
-        await state.clear()
-        await message.answer("Добавление отменено.", reply_markup=main_menu())
-
     @router.message(AddEntry.name)
     async def add_name(message: Message, state: FSMContext) -> None:
         name = (message.text or "").strip()
@@ -180,11 +314,52 @@ def build_router(
             await message.answer("В телефоне должно быть минимум 7 цифр. Попробуйте ещё раз.")
             return
         await state.update_data(phone=phone)
-        await state.set_state(AddEntry.desired_date)
-        await message.answer(
-            "На какую дату клиент хотел записаться?\n"
-            "Например: 22.07.2026, 2026-07-22, сегодня или завтра."
+        if settings.yclients_enabled:
+            await ask_service(message, state)
+            return
+        await ask_date(message, state)
+
+    @router.message(AddEntry.service)
+    async def search_service(message: Message, state: FSMContext) -> None:
+        await ask_service(message, state, message.text or "")
+
+    @router.callback_query(AddEntry.service, F.data.startswith("svc:"))
+    async def pick_service(callback: CallbackQuery, state: FSMContext) -> None:
+        service_id = int((callback.data or "svc:0").split(":", 1)[1])
+        try:
+            titles = dict(await yclients.get_services())
+        except YclientsError:
+            titles = {}
+        await state.update_data(
+            service_id=service_id, service_title=titles.get(service_id)
         )
+        await callback.answer()
+        if callback.message:
+            await callback.message.edit_reply_markup(reply_markup=None)
+            await ask_staff(callback.message, state)
+
+    @router.message(AddEntry.staff)
+    async def search_staff(message: Message, state: FSMContext) -> None:
+        await ask_staff(message, state, message.text or "")
+
+    @router.callback_query(AddEntry.staff, F.data.startswith("stf:"))
+    async def pick_staff(callback: CallbackQuery, state: FSMContext) -> None:
+        staff_id = int((callback.data or "stf:0").split(":", 1)[1])
+        staff_name = None
+        if staff_id:
+            data = await state.get_data()
+            try:
+                names = dict(await yclients.get_staff(int(data["service_id"])))
+                staff_name = names.get(staff_id)
+            except (YclientsError, KeyError, TypeError, ValueError):
+                staff_name = None
+        await state.update_data(
+            staff_id=staff_id or None, staff_name=staff_name
+        )
+        await callback.answer()
+        if callback.message:
+            await callback.message.edit_reply_markup(reply_markup=None)
+            await ask_date(callback.message, state)
 
     @router.message(AddEntry.desired_date)
     async def add_date(message: Message, state: FSMContext) -> None:
@@ -195,7 +370,7 @@ def build_router(
         except ValueError as exc:
             await message.answer(str(exc))
             return
-        if desired_date < datetime.now(settings.timezone).date():
+        if desired_date < today():
             await message.answer("Дата уже прошла. Укажите сегодня или будущую дату.")
             return
         await state.update_data(
@@ -247,6 +422,8 @@ def build_router(
             "Проверьте заявку:\n\n"
             f"Имя: {data['client_name']}\n"
             f"Телефон: {data['phone']}\n"
+            f"Услуга: {data.get('service_title') or 'не указана'}\n"
+            f"Мастер: {data.get('staff_name') or 'любой'}\n"
             f"Дата: {desired_date.strftime('%d.%m.%Y')}\n"
             f"Время: {data.get('desired_time') or 'не указано'}\n"
             f"Комментарий: {comment or 'нет'}"
@@ -263,6 +440,10 @@ def build_router(
             desired_date=datetime.fromisoformat(data["desired_date"]).date(),
             desired_time=data.get("desired_time"),
             comment=data.get("comment"),
+            service_id=data.get("service_id"),
+            service_title=data.get("service_title"),
+            staff_id=data.get("staff_id"),
+            staff_name=data.get("staff_name"),
         )
         await state.clear()
         await callback.answer("Добавлено")
@@ -276,54 +457,7 @@ def build_router(
         if callback.message:
             await callback.message.answer("Добавление отменено.", reply_markup=main_menu())
 
-    @router.message(Command("list"))
-    @router.message(F.text == "Лист ожидания")
-    async def list_entries(message: Message) -> None:
-        await show_entries(message, "Лист ожидания")
-
-    @router.message(Command("today"))
-    @router.message(F.text == "Сегодня")
-    async def today(message: Message) -> None:
-        value = datetime.now(settings.timezone).date()
-        await show_entries(message, "Ждут запись на сегодня", value)
-
-    @router.message(Command("tomorrow"))
-    @router.message(F.text == "Завтра")
-    async def tomorrow(message: Message) -> None:
-        value = datetime.now(settings.timezone).date() + timedelta(days=1)
-        await show_entries(message, "Ждут запись на завтра", value)
-
-    @router.message(Command("done"))
-    async def done(message: Message) -> None:
-        await show_entries(message, "Кого отметить записанным", action="booked")
-
-    @router.message(Command("delete"))
-    async def delete(message: Message) -> None:
-        await show_entries(message, "Какую заявку удалить", action="deleted")
-
-    @router.message(Command("check"))
-    @router.message(F.text == "Проверить окна")
-    async def check_all(message: Message) -> None:
-        readiness_error = settings.yclients_readiness_error
-        if readiness_error:
-            await message.answer(readiness_error, reply_markup=main_menu())
-            return
-        await message.answer("Проверяю окна…")
-        results = await checker.check_waitlist_entries()
-        if not results:
-            await message.answer("Активных заявок нет.", reply_markup=main_menu())
-            return
-        errors = [result.error for result in results if result.error]
-        with_slots = sum(bool(result.slots) for result in results)
-        sent = sum(result.notification_sent for result in results)
-        summary = (
-            f"Проверено заявок: {len(results)}\n"
-            f"С доступными окнами: {with_slots}\n"
-            f"Новых уведомлений: {sent}"
-        )
-        if errors:
-            summary += f"\nОшибок: {len(errors)}\n{errors[0]}"
-        await message.answer(summary, reply_markup=main_menu())
+    # --- Действия по заявкам
 
     @router.callback_query(F.data.startswith("entry:"))
     async def entry_callback(callback: CallbackQuery) -> None:
@@ -334,6 +468,12 @@ def build_router(
         entry = await repository.get(entry_id)
         if entry is None or entry.status not in {EntryStatus.WAITING, EntryStatus.NOTIFIED}:
             await callback.answer("Заявка уже обработана или не найдена.", show_alert=True)
+            return
+
+        if action == "open":
+            await callback.answer()
+            if callback.message:
+                await send_card(callback.message, entry)
             return
 
         if action == "check":
@@ -394,7 +534,7 @@ def build_router(
             await callback.answer("Заявка уже обработана или не найдена.", show_alert=True)
             return
         status = EntryStatus.BOOKED if action == "booked" else EntryStatus.DELETED
-        entry = await repository.set_status(int(raw_id), status)
+        await repository.set_status(int(raw_id), status)
         await callback.answer("Готово")
         if callback.message:
             await callback.message.edit_reply_markup(reply_markup=None)
@@ -453,6 +593,11 @@ def build_router(
                     else "Владельца удалить нельзя или администратор уже удалён.",
                     reply_markup=main_menu(),
                 )
+
+    @router.callback_query()
+    async def stale_callback(callback: CallbackQuery) -> None:
+        """Кнопка из старого сообщения после перезапуска — не оставляем «часики»."""
+        await callback.answer("Кнопка устарела. Откройте список заново: /list", show_alert=True)
 
     @router.message()
     async def fallback(message: Message) -> None:

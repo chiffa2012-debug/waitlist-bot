@@ -1,0 +1,16 @@
+[Unit]
+Description=Telegram waitlist bot (@List_wait_bot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/waitlist-bot
+ExecStart=/opt/waitlist-bot/.venv/bin/python -m bot.main
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

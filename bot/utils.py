@@ -105,6 +105,8 @@ def format_entry(entry: WaitlistEntry) -> str:
         f"#{entry.id}\n"
         f"Имя: {entry.client_name}\n"
         f"Телефон: {entry.phone}\n"
+        f"Услуга: {entry.service_title or 'не указана'}\n"
+        f"Мастер: {entry.staff_name or 'любой'}\n"
         f"Дата: {entry.desired_date.strftime('%d.%m.%Y')}\n"
         f"Время: {entry.desired_time or 'не указано'}\n"
         f"Комментарий: {entry.comment or 'нет'}\n"
@@ -114,3 +116,26 @@ def format_entry(entry: WaitlistEntry) -> str:
 
 def format_added(entry: WaitlistEntry) -> str:
     return "Клиент добавлен в лист ожидания.\n\n" + format_entry(entry).split("\n", 1)[1]
+
+
+def format_entry_line(entry: WaitlistEntry) -> str:
+    """Одна заявка в общем списке — две-три короткие строки."""
+    when = entry.desired_date.strftime("%d.%m")
+    if entry.desired_time:
+        when += f" {entry.desired_time}"
+    lines = [f"#{entry.id} · {when} · {entry.client_name} · {entry.phone}"]
+    service = entry.service_title or "услуга не указана"
+    lines.append(f"    {service} → {entry.staff_name or 'любой мастер'}")
+    if entry.comment:
+        lines.append(f"    «{entry.comment}»")
+    return "\n".join(lines)
+
+
+def format_entries_list(entries: list[WaitlistEntry], title: str, limit: int = 20) -> str:
+    """Компактный список: одно сообщение вместо сообщения на каждую заявку."""
+    visible = entries[:limit]
+    header = f"{title}: {len(entries)}"
+    if len(entries) > len(visible):
+        header += f" (показаны первые {len(visible)})"
+    body = "\n".join(format_entry_line(entry) for entry in visible)
+    return f"{header}\n\n{body}"

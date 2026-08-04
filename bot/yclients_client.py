@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -11,9 +11,26 @@ from .config import Settings
 
 logger = logging.getLogger(__name__)
 
+SERVICES_CACHE_TTL_SECONDS = 6 * 60 * 60
+ANY_STAFF_ID = 0
+
 
 class YclientsError(RuntimeError):
     """A short, safe-to-display Yclients integration error."""
+
+
+def extract_slot_time(slot: Any) -> str | None:
+    """Приводит слот Yclients к «ЧЧ:ММ»."""
+    if not isinstance(slot, dict):
+        return None
+    value = str(slot.get("time") or slot.get("datetime") or "")
+    if "T" in value:
+        value = value.split("T", 1)[1][:5]
+    elif " " in value:
+        value = value.split(" ", 1)[1][:5]
+    else:
+        value = value[:5]
+    return value if len(value) == 5 and value[2] == ":" else None
 
 
 class YclientsClient:
@@ -31,6 +48,8 @@ class YclientsClient:
                 ),
             },
         )
+        self._services_cache: list[tuple[int, str]] | None = None
+        self._services_cached_at = 0.0
 
     async def close(self) -> None:
         await self.client.aclose()
@@ -54,74 +73,86 @@ class YclientsClient:
             logger.warning("Yclients connection/response error: %s", exc)
             raise YclientsError("Yclients временно недоступен") from exc
 
-    async def get_available_slots(self, desired_date: str) -> list[str]:
+    def _require_ready(self) -> int:
         readiness_error = self.settings.yclients_readiness_error
         if readiness_error:
             raise YclientsError(readiness_error)
-
         company_id = self.settings.yclients_company_id
-        service_id = self.settings.yclients_service_id
-        staff_id = self.settings.yclients_staff_id
-        assert company_id is not None and service_id is not None
+        assert company_id is not None
+        return company_id
 
-        staff_items = await self._get(
-            f"/book_staff/{company_id}",
-            params=[("service_id", str(service_id))],
+    async def get_services(self) -> list[tuple[int, str]]:
+        """Онлайн-услуги филиала: (id, название). Кэш на 6 часов."""
+        now = time.monotonic()
+        if (
+            self._services_cache is not None
+            and now - self._services_cached_at < SERVICES_CACHE_TTL_SECONDS
+        ):
+            return self._services_cache
+
+        company_id = self._require_ready()
+        data = await self._get(f"/book_services/{company_id}")
+        raw = data.get("services") if isinstance(data, dict) else data
+        if not isinstance(raw, list):
+            raise YclientsError("Yclients вернул неожиданный список услуг")
+        services = [
+            (int(item["id"]), str(item.get("title") or "").strip())
+            for item in raw
+            if isinstance(item, dict) and item.get("id") is not None
+        ]
+        self._services_cache = [item for item in services if item[1]]
+        self._services_cached_at = now
+        return self._services_cache
+
+    async def search_services(self, query: str, limit: int = 8) -> list[tuple[int, str]]:
+        needle = query.strip().casefold().replace("ё", "е")
+        services = await self.get_services()
+        if not needle:
+            return services[:limit]
+        matches = [
+            item for item in services if needle in item[1].casefold().replace("ё", "е")
+        ]
+        return matches[:limit]
+
+    async def get_staff(self, service_id: int, limit: int = 12) -> list[tuple[int, str]]:
+        """Мастера, доступные для услуги: (id, имя)."""
+        company_id = self._require_ready()
+        items = await self._get(
+            f"/book_staff/{company_id}", params=[("service_id", str(service_id))]
         )
-        if not isinstance(staff_items, list):
+        if not isinstance(items, list):
             raise YclientsError("Yclients вернул неожиданный список мастеров")
-
-        bookable_staff = [
-            item
-            for item in staff_items
+        staff = [
+            (int(item["id"]), str(item.get("name") or "").strip())
+            for item in items
             if isinstance(item, dict)
+            and item.get("id") is not None
             and item.get("bookable") is not False
             and not item.get("fired")
             and not item.get("is_fired")
         ]
-        if staff_id is not None:
-            bookable_staff = [
-                item for item in bookable_staff if str(item.get("id")) == str(staff_id)
-            ]
-        if not bookable_staff:
-            return []
+        return [item for item in staff if item[1]][:limit]
 
-        async def fetch_times(item: dict[str, Any]) -> list[str]:
-            current_staff_id = item.get("id")
-            data = await self._get(
-                f"/book_times/{company_id}/{current_staff_id}/{desired_date}",
-                params=[("service_ids[]", str(service_id))],
+    async def get_available_slots(
+        self,
+        desired_date: str,
+        service_id: int | None = None,
+        staff_id: int | None = None,
+    ) -> list[str]:
+        """Свободные окна на дату. staff_id=None — сразу по всем мастерам."""
+        company_id = self._require_ready()
+        service_id = service_id or self.settings.yclients_service_id
+        if service_id is None:
+            raise YclientsError(
+                "Не выбрана услуга. Укажите её в заявке или заполните "
+                "YCLIENTS_SERVICE_ID в .env."
             )
-            if not isinstance(data, list):
-                return []
-            result: list[str] = []
-            for slot in data:
-                if not isinstance(slot, dict):
-                    continue
-                value = str(slot.get("time") or slot.get("datetime") or "")
-                if "T" in value:
-                    value = value.split("T", 1)[1][:5]
-                elif " " in value:
-                    value = value.split(" ", 1)[1][:5]
-                else:
-                    value = value[:5]
-                if len(value) == 5 and value[2] == ":":
-                    result.append(value)
-            return result
 
-        responses = await asyncio.gather(
-            *(fetch_times(item) for item in bookable_staff[:12]),
-            return_exceptions=True,
+        data = await self._get(
+            f"/book_times/{company_id}/{staff_id or ANY_STAFF_ID}/{desired_date}",
+            params=[("service_ids[]", str(service_id))],
         )
-        successful_calls = 0
-        slots: set[str] = set()
-        first_error: Exception | None = None
-        for response in responses:
-            if isinstance(response, Exception):
-                first_error = first_error or response
-                continue
-            successful_calls += 1
-            slots.update(response)
-        if successful_calls == 0 and first_error is not None:
-            raise YclientsError(str(first_error)) from first_error
+        if not isinstance(data, list):
+            return []
+        slots = {value for value in map(extract_slot_time, data) if value}
         return sorted(slots)

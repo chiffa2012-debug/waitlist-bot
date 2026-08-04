@@ -57,6 +57,7 @@ class Settings:
     yclients_staff_id: int | None
     yclients_service_id: int | None
     yclients_check_interval_minutes: int
+    slot_time_tolerance_hours: int = 3
     notification_cooldown_hours: int = 6
 
     @classmethod
@@ -76,6 +77,12 @@ class Settings:
         if interval < 1:
             raise ValueError("YCLIENTS_CHECK_INTERVAL_MINUTES должен быть не меньше 1")
 
+        tolerance = _optional_int("SLOT_TIME_TOLERANCE_HOURS")
+        if tolerance is None:
+            tolerance = 3
+        if tolerance < 0:
+            raise ValueError("SLOT_TIME_TOLERANCE_HOURS не может быть отрицательным")
+
         return cls(
             telegram_bot_token=token,
             admin_telegram_id=_optional_int("ADMIN_TELEGRAM_ID"),
@@ -93,6 +100,7 @@ class Settings:
             yclients_staff_id=_optional_int("YCLIENTS_STAFF_ID"),
             yclients_service_id=_optional_int("YCLIENTS_SERVICE_ID"),
             yclients_check_interval_minutes=interval,
+            slot_time_tolerance_hours=tolerance,
         )
 
     @property
@@ -107,7 +115,6 @@ class Settings:
             ("YCLIENTS_BEARER_TOKEN", self.yclients_bearer_token),
             ("YCLIENTS_USER_TOKEN", self.yclients_user_token),
             ("YCLIENTS_COMPANY_ID", self.yclients_company_id),
-            ("YCLIENTS_SERVICE_ID", self.yclients_service_id),
         ):
             if value in (None, ""):
                 missing.append(name)

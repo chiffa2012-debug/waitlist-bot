@@ -18,6 +18,10 @@ def _entry_from_row(row: object) -> WaitlistEntry:
         desired_date=date.fromisoformat(row["desired_date"]),
         desired_time=row["desired_time"],
         comment=row["comment"],
+        service_id=row["service_id"],
+        service_title=row["service_title"],
+        staff_id=row["staff_id"],
+        staff_name=row["staff_name"],
         status=EntryStatus(row["status"]),
         last_notified_at=(
             datetime.fromisoformat(row["last_notified_at"])
@@ -51,6 +55,10 @@ class WaitlistRepository:
         desired_date: date,
         desired_time: str | None,
         comment: str | None,
+        service_id: int | None = None,
+        service_title: str | None = None,
+        staff_id: int | None = None,
+        staff_name: str | None = None,
     ) -> WaitlistEntry:
         connection = self.database.require_connection()
         now = _utc_now().isoformat()
@@ -58,10 +66,23 @@ class WaitlistRepository:
             """
             INSERT INTO waitlist_entries (
                 client_name, phone, desired_date, desired_time, comment,
+                service_id, service_title, staff_id, staff_name,
                 status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, 'waiting', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', ?, ?)
             """,
-            (client_name, phone, desired_date.isoformat(), desired_time, comment, now, now),
+            (
+                client_name,
+                phone,
+                desired_date.isoformat(),
+                desired_time,
+                comment,
+                service_id,
+                service_title,
+                staff_id,
+                staff_name,
+                now,
+                now,
+            ),
         )
         await connection.commit()
         entry = await self.get(int(cursor.lastrowid))
@@ -77,7 +98,12 @@ class WaitlistRepository:
         row = await cursor.fetchone()
         return _entry_from_row(row) if row else None
 
-    async def list_active(self, desired_date: date | None = None) -> list[WaitlistEntry]:
+    async def list_active(
+        self,
+        desired_date: date | None = None,
+        not_before: date | None = None,
+    ) -> list[WaitlistEntry]:
+        """Активные заявки. not_before отсекает заявки на прошедшие даты."""
         connection = self.database.require_connection()
         placeholders = ",".join("?" for _ in ACTIVE_STATUSES)
         parameters: list[object] = [status.value for status in ACTIVE_STATUSES]
@@ -85,8 +111,24 @@ class WaitlistRepository:
         if desired_date is not None:
             query += " AND desired_date = ?"
             parameters.append(desired_date.isoformat())
+        if not_before is not None:
+            query += " AND desired_date >= ?"
+            parameters.append(not_before.isoformat())
         query += " ORDER BY desired_date, COALESCE(desired_time, '99:99'), created_at"
         cursor = await connection.execute(query, parameters)
+        return [_entry_from_row(row) for row in await cursor.fetchall()]
+
+    async def list_expired(self, before: date) -> list[WaitlistEntry]:
+        """Активные заявки, дата которых уже прошла."""
+        connection = self.database.require_connection()
+        placeholders = ",".join("?" for _ in ACTIVE_STATUSES)
+        parameters: list[object] = [status.value for status in ACTIVE_STATUSES]
+        parameters.append(before.isoformat())
+        cursor = await connection.execute(
+            f"SELECT * FROM waitlist_entries WHERE status IN ({placeholders}) "
+            "AND desired_date < ? ORDER BY desired_date DESC, created_at DESC",
+            parameters,
+        )
         return [_entry_from_row(row) for row in await cursor.fetchall()]
 
     async def set_status(self, entry_id: int, status: EntryStatus) -> WaitlistEntry | None:

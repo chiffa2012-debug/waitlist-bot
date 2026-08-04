@@ -5,7 +5,18 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from .models import Admin
+from .models import Admin, WaitlistEntry
+
+
+MENU_BUTTONS = (
+    "Добавить клиента",
+    "Лист ожидания",
+    "Проверить окна",
+    "Сегодня",
+    "Завтра",
+    "Администраторы",
+    "Помощь",
+)
 
 
 def main_menu() -> ReplyKeyboardMarkup:
@@ -46,6 +57,31 @@ def add_confirmation_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def options_keyboard(
+    prefix: str,
+    options: list[tuple[int, str]],
+    extra: tuple[str, str] | None = None,
+) -> InlineKeyboardMarkup:
+    """Список вариантов «id — название» одной кнопкой на строку."""
+    rows = [
+        [InlineKeyboardButton(text=title[:60], callback_data=f"{prefix}:{option_id}")]
+        for option_id, title in options
+    ]
+    if extra is not None:
+        rows.append([InlineKeyboardButton(text=extra[0], callback_data=extra[1])])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def entries_index(entries: list[WaitlistEntry]) -> InlineKeyboardMarkup:
+    """Кнопки-номера заявок под общим списком."""
+    buttons = [
+        InlineKeyboardButton(text=f"#{entry.id}", callback_data=f"entry:open:{entry.id}")
+        for entry in entries
+    ]
+    rows = [buttons[index : index + 4] for index in range(0, len(buttons), 4)]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def entry_actions(entry_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -62,14 +98,6 @@ def entry_actions(entry_id: int) -> InlineKeyboardMarkup:
                     text="Проверить окна", callback_data=f"entry:check:{entry_id}"
                 )
             ],
-        ]
-    )
-
-
-def single_action(entry_id: int, action: str, label: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=label, callback_data=f"entry:{action}:{entry_id}")]
         ]
     )
 

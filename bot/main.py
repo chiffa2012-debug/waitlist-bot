@@ -24,6 +24,7 @@ COMMANDS = [
     BotCommand(command="list", description="Лист ожидания"),
     BotCommand(command="today", description="На сегодня"),
     BotCommand(command="tomorrow", description="На завтра"),
+    BotCommand(command="expired", description="Заявки с прошедшей датой"),
     BotCommand(command="done", description="Отметить записанным"),
     BotCommand(command="delete", description="Удалить заявку"),
     BotCommand(command="check", description="Проверить окна"),
@@ -60,7 +61,7 @@ async def run_bot(settings: Settings) -> None:
     checker = WaitlistChecker(settings, repository, yclients, bot)
     scheduler = build_scheduler(settings, checker)
 
-    router = build_router(settings, repository, checker)
+    router = build_router(settings, repository, checker, yclients)
     access = AdminOnlyMiddleware(settings, repository)
     router.message.outer_middleware(access)
     router.callback_query.outer_middleware(access)

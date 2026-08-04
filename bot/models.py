@@ -23,6 +23,10 @@ class WaitlistEntry:
     desired_date: date
     desired_time: str | None
     comment: str | None
+    service_id: int | None
+    service_title: str | None
+    staff_id: int | None
+    staff_name: str | None
     status: EntryStatus
     last_notified_at: datetime | None
     created_at: datetime

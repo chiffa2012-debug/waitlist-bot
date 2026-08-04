@@ -60,16 +60,36 @@ CREATE TABLE IF NOT EXISTS fsm_storage (
 """
 
 
+# Колонки, добавленные после первой версии схемы: имя -> тип.
+NEW_ENTRY_COLUMNS = {
+    "service_id": "INTEGER NULL",
+    "service_title": "TEXT NULL",
+    "staff_id": "INTEGER NULL",
+    "staff_name": "TEXT NULL",
+}
+
+
 class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.connection: aiosqlite.Connection | None = None
+
+    async def _migrate(self) -> None:
+        assert self.connection is not None
+        cursor = await self.connection.execute("PRAGMA table_info(waitlist_entries)")
+        existing = {row["name"] for row in await cursor.fetchall()}
+        for name, definition in NEW_ENTRY_COLUMNS.items():
+            if name not in existing:
+                await self.connection.execute(
+                    f"ALTER TABLE waitlist_entries ADD COLUMN {name} {definition}"
+                )
 
     async def connect(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = await aiosqlite.connect(self.path)
         self.connection.row_factory = aiosqlite.Row
         await self.connection.executescript(SCHEMA)
+        await self._migrate()
         await self.connection.execute(
             """
             INSERT OR IGNORE INTO admins (
