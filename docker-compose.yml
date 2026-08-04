@@ -1,0 +1,13 @@
+services:
+  waitlist-bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: sqlite:////app/data/waitlist.db
+    volumes:
+      - waitlist_data:/app/data
+
+volumes:
+  waitlist_data:
