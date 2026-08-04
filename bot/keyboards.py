@@ -57,6 +57,15 @@ def add_confirmation_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def duplicate_confirmation() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Всё равно добавить", callback_data="add:force")],
+            [InlineKeyboardButton(text="Отмена", callback_data="add:cancel")],
+        ]
+    )
+
+
 def options_keyboard(
     prefix: str,
     options: list[tuple[int, str]],

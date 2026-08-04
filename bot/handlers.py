@@ -13,6 +13,7 @@ from .keyboards import (
     admins_keyboard,
     add_confirmation_keyboard,
     cancel_keyboard,
+    duplicate_confirmation,
     entries_index,
     entry_actions,
     main_menu,
@@ -431,8 +432,7 @@ def build_router(
         await state.set_state(AddEntry.confirmation)
         await message.answer(preview, reply_markup=add_confirmation_keyboard())
 
-    @router.callback_query(AddEntry.confirmation, F.data == "add:confirm")
-    async def confirm_add(callback: CallbackQuery, state: FSMContext) -> None:
+    async def create_entry(callback: CallbackQuery, state: FSMContext) -> None:
         data = await state.get_data()
         entry = await repository.add(
             client_name=data["client_name"],
@@ -449,6 +449,32 @@ def build_router(
         await callback.answer("Добавлено")
         if callback.message:
             await callback.message.answer(format_added(entry), reply_markup=main_menu())
+
+    @router.callback_query(AddEntry.confirmation, F.data == "add:confirm")
+    async def confirm_add(callback: CallbackQuery, state: FSMContext) -> None:
+        data = await state.get_data()
+        duplicate = await repository.find_active_duplicate(
+            data["phone"],
+            datetime.fromisoformat(data["desired_date"]).date(),
+            data.get("service_id"),
+        )
+        if duplicate is None:
+            await create_entry(callback, state)
+            return
+        await callback.answer()
+        if callback.message:
+            await callback.message.edit_reply_markup(reply_markup=None)
+            await callback.message.answer(
+                "Этот клиент уже ждёт эту же услугу на эту дату:\n\n"
+                + format_entry(duplicate),
+                reply_markup=duplicate_confirmation(),
+            )
+
+    @router.callback_query(AddEntry.confirmation, F.data == "add:force")
+    async def confirm_add_anyway(callback: CallbackQuery, state: FSMContext) -> None:
+        if callback.message:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        await create_entry(callback, state)
 
     @router.callback_query(AddEntry.confirmation, F.data == "add:cancel")
     async def cancel_add_callback(callback: CallbackQuery, state: FSMContext) -> None:

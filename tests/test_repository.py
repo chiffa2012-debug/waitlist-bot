@@ -29,6 +29,34 @@ async def test_past_entries_leave_the_active_list(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_duplicate_is_found_regardless_of_phone_format(tmp_path) -> None:
+    database = Database(tmp_path / "waitlist.db")
+    await database.connect()
+    repository = WaitlistRepository(database)
+    day = date(2026, 7, 25)
+    try:
+        entry = await repository.add(
+            "Анна", "+7 999 123-45-67", day, "15:00", None, service_id=456
+        )
+
+        found = await repository.find_active_duplicate("89991234567", day, 456)
+        assert found is not None and found.id == entry.id
+
+        # Другая дата, другая услуга и другой клиент дублями не считаются.
+        assert await repository.find_active_duplicate(
+            "89991234567", date(2026, 7, 26), 456
+        ) is None
+        assert await repository.find_active_duplicate("89991234567", day, 789) is None
+        assert await repository.find_active_duplicate("89995556677", day, 456) is None
+
+        # Закрытая заявка перестаёт быть дублем.
+        await repository.set_status(entry.id, EntryStatus.BOOKED)
+        assert await repository.find_active_duplicate("89991234567", day, 456) is None
+    finally:
+        await database.close()
+
+
+@pytest.mark.asyncio
 async def test_service_and_staff_are_stored(tmp_path) -> None:
     database = Database(tmp_path / "waitlist.db")
     await database.connect()

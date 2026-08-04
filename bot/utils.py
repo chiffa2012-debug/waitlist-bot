@@ -88,6 +88,12 @@ def is_valid_phone(value: str) -> bool:
     return len(re.sub(r"\D", "", value)) >= 7
 
 
+def phone_digits(value: str) -> str:
+    """Телефон для сравнения: только цифры, без кода страны (8 и +7 совпадут)."""
+    digits = re.sub(r"\D", "", value)
+    return digits[-10:] if len(digits) > 10 else digits
+
+
 def normalize_optional(value: str) -> str | None:
     cleaned = value.strip()
     return cleaned or None

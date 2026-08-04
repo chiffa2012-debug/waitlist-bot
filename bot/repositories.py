@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 
 from .db import Database
 from .models import ACTIVE_STATUSES, Admin, EntryStatus, WaitlistEntry
+from .utils import phone_digits
 
 
 def _utc_now() -> datetime:
@@ -117,6 +118,19 @@ class WaitlistRepository:
         query += " ORDER BY desired_date, COALESCE(desired_time, '99:99'), created_at"
         cursor = await connection.execute(query, parameters)
         return [_entry_from_row(row) for row in await cursor.fetchall()]
+
+    async def find_active_duplicate(
+        self,
+        phone: str,
+        desired_date: date,
+        service_id: int | None = None,
+    ) -> WaitlistEntry | None:
+        """Активная заявка того же клиента на ту же дату и услугу."""
+        target = phone_digits(phone)
+        for entry in await self.list_active(desired_date):
+            if phone_digits(entry.phone) == target and entry.service_id == service_id:
+                return entry
+        return None
 
     async def list_expired(self, before: date) -> list[WaitlistEntry]:
         """Активные заявки, дата которых уже прошла."""
