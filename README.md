@@ -1,3 +1,33 @@
+# Waitlist Bot: Telegram + YClients free-slot watcher
+
+![cover](docs/cover.png)
+
+An internal Telegram bot for a beauty salon admin. Clients who could not get a slot go on a waitlist with service, master and preferred date. Every 15 minutes the bot checks free slots in the YClients CRM and alerts the admin the moment one opens, including earlier days. In daily use at my own salon.
+
+**Features**
+- Step-by-step form: name, phone, service, master (or "any"), date in free form ("tomorrow at 16:00", `25.07.2026`)
+- Slot watcher on APScheduler: one API request per (service, master, date) group, earlier-day search, time tolerance
+- Duplicate detection by phone + service + date, expired requests, compact list with inline buttons
+- Owner / admin access control, FSM state persisted in SQLite (survives restarts)
+- Read-only YClients API: the bot never creates bookings, a human does
+- 40 automated tests (pytest), Docker and systemd deployment
+
+**Stack:** Python 3.11+, aiogram 3, APScheduler, httpx, aiosqlite, SQLite, pytest, Docker, systemd
+
+## Quick start
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env        # TELEGRAM_BOT_TOKEN, ADMIN_TELEGRAM_ID
+python -m pytest -q
+python -m bot.main
+```
+
+---
+
+**Подробное описание на русском ниже.**
+
 # Telegram-бот «Лист ожидания» (@List_wait_bot)
 
 Внутренний бот администратора салона: хранит заявки клиентов, которым не хватило места, и сам следит за свободными окнами в Yclients. Клиентам бот не пишет и записи в Yclients не создаёт — только подсказывает администратору, что окно появилось.
@@ -111,7 +141,7 @@ Unit рассчитан на каталог `/opt/waitlist-bot` с venv внут
 
 ```bash
 python -m bot.main --smoke-check   # конфигурация + SQLite, без сети
-python -m pytest -q                # 36 тестов
+python -m pytest -q                # 40 тестов
 ```
 
 Ручной сценарий:
